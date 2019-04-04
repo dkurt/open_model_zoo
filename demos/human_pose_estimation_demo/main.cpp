@@ -9,6 +9,7 @@
 */
 
 #include <vector>
+#include <thread>
 
 #include <inference_engine.hpp>
 
@@ -52,14 +53,62 @@ int main(int argc, char* argv[]) {
             return EXIT_SUCCESS;
         }
 
+        cv::namedWindow("ICV Human Pose Estimation", cv::WINDOW_NORMAL);
+
+        std::queue<cv::Mat> framesQueue;
+        std::queue<std::vector<HumanPose> > posesQueue;
+        std::mutex framesQueueMutex;
+
+        double inferenceTime = 0.0;
+
+        std::thread drawingThread([&](){
+            while (true) {
+                cv::Mat image;
+                std::vector<HumanPose> poses;
+                std::stringstream fpsSs;
+
+                framesQueueMutex.lock();
+                if (!framesQueue.empty())
+                {
+                    image = framesQueue.front();
+                    poses = posesQueue.front();
+                    framesQueue.pop();
+                    posesQueue.pop();
+                }
+                else
+                {
+                    framesQueueMutex.unlock();
+                    continue;
+                }
+                framesQueueMutex.unlock();
+
+                renderHumanPose(poses, image);
+
+                cv::Mat fpsPane(35, 155, CV_8UC3);
+                fpsPane.setTo(cv::Scalar(153, 119, 76));
+                cv::Mat srcRegion = image(cv::Rect(8, 8, fpsPane.cols, fpsPane.rows));
+                cv::addWeighted(srcRegion, 0.4, fpsPane, 0.6, 0, srcRegion);
+                fpsSs << "FPS: " << int(1000.0f / inferenceTime * 100) / 100.0f;
+                cv::putText(image, fpsSs.str(), cv::Point(16, 32),
+                            cv::FONT_HERSHEY_COMPLEX, 0.8, cv::Scalar(0, 0, 255));
+                cv::imshow("ICV Human Pose Estimation", image);
+
+                if (cv::waitKey(1) == 27) {
+                    break;
+                }
+            }
+        });
+
         HumanPoseEstimator estimator(FLAGS_m, FLAGS_d, FLAGS_pc);
         cv::VideoCapture cap;
+        cv::resizeWindow("ICV Human Pose Estimation", 1280, 960);
         if (!(FLAGS_i == "cam" ? cap.open(0) : cap.open(FLAGS_i))) {
             throw std::logic_error("Cannot open input file or camera: " + FLAGS_i);
         }
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
 
         int delay = 33;
-        double inferenceTime = 0.0;
         cv::Mat image;
         if (!cap.read(image)) {
             throw std::logic_error("Failed to get frame from cv::VideoCapture");
@@ -85,29 +134,10 @@ int main(int argc, char* argv[]) {
                     std::cout << rawPose.str() << std::endl;
                 }
             }
-
-            if (FLAGS_no_show) {
-                continue;
-            }
-
-            renderHumanPose(poses, image);
-
-            cv::Mat fpsPane(35, 155, CV_8UC3);
-            fpsPane.setTo(cv::Scalar(153, 119, 76));
-            cv::Mat srcRegion = image(cv::Rect(8, 8, fpsPane.cols, fpsPane.rows));
-            cv::addWeighted(srcRegion, 0.4, fpsPane, 0.6, 0, srcRegion);
-            std::stringstream fpsSs;
-            fpsSs << "FPS: " << int(1000.0f / inferenceTime * 100) / 100.0f;
-            cv::putText(image, fpsSs.str(), cv::Point(16, 32),
-                        cv::FONT_HERSHEY_COMPLEX, 0.8, cv::Scalar(0, 0, 255));
-            cv::imshow("ICV Human Pose Estimation", image);
-
-            int key = cv::waitKey(delay) & 255;
-            if (key == 'p') {
-                delay = (delay == 0) ? 33 : 0;
-            } else if (key == 27) {
-                break;
-            }
+            framesQueueMutex.lock();
+            framesQueue.push(image);
+            posesQueue.push(poses);
+            framesQueueMutex.unlock();
         } while (cap.read(image));
     }
     catch (const std::exception& error) {

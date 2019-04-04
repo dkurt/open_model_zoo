@@ -42,7 +42,7 @@ HumanPoseEstimator::HumanPoseEstimator(const std::string& modelPath,
     netReader.ReadWeights(binFileName);
     network = netReader.getNetwork();
     InferenceEngine::InputInfo::Ptr inputInfo = network.getInputsInfo().begin()->second;
-    inputLayerSize = cv::Size(inputInfo->getTensorDesc().getDims()[3], inputInfo->getTensorDesc().getDims()[2]);
+    inputLayerSize = cv::Size(inputInfo->getTensorDesc().getDims()[3], 128);
     inputInfo->setPrecision(InferenceEngine::Precision::U8);
 
     InferenceEngine::OutputsDataMap outputInfo = network.getOutputsInfo();
