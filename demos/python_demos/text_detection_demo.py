@@ -11,25 +11,28 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-import cv2
+import cv2 as cv
 import numpy as np
 import argparse
 import sys
+import time
 
 ap = argparse.ArgumentParser()
-ap.add_argument("-i", required=True, dest="image_path", help="path to input image")
+# ap.add_argument("-i", required=True, dest="image_path", help="path to input image")
 ap.add_argument("-m", required=True, dest="model_path", help="path to model's XML file")
+ap.add_argument("-mr", required=True, dest="recogn_path", help="path to model's XML file")
 args = ap.parse_args()
 
+cv.namedWindow('Detected text', cv.WINDOW_NORMAL)
 
 class PixelLinkDecoder():
     """ Decoder for Intel's version of PixelLink "text-detection-0001".
         You will need OpenCV compiled with Inference Engine to use this.
 
         Example of usage:
-            td = cv2.dnn.readNet('./text-detection-0001.xml','./text-detection-0001.bin')
-            img = cv2.imread('tmp.jpg')
-            blob = cv2.dnn.blobFromImage(img, 1, (1280,768))
+            td = cv.dnn.readNet('./text-detection-0001.xml','./text-detection-0001.bin')
+            img = cv.imread('tmp.jpg')
+            blob = cv.dnn.blobFromImage(img, 1, (1280,768))
             td.setInput(blob)
             a, b = td.forward(td.getUnconnectedOutLayersNames())
             dcd = PixelLinkDecoder()
@@ -168,11 +171,11 @@ class PixelLinkDecoder():
         image_h, image_w = self.image_shape
         self.bboxes = []
         max_bbox_idx = self.mask.max()
-        mask_tmp = cv2.resize(self.mask, (image_w, image_h), interpolation=cv2.INTER_NEAREST)
+        mask_tmp = cv.resize(self.mask, (image_w, image_h), interpolation=cv.INTER_NEAREST)
 
         for bbox_idx in range(1, max_bbox_idx + 1):
             bbox_mask = mask_tmp == bbox_idx
-            cnts, _ = cv2.findContours(bbox_mask.astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            cnts, _ = cv.findContours(bbox_mask.astype(np.uint8), cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
             if len(cnts) == 0:
                 continue
             cnt = cnts[0]
@@ -184,9 +187,9 @@ class PixelLinkDecoder():
             self.bboxes.append(self._order_points(rect))
 
     def _min_area_rect(self, cnt):
-        rect = cv2.minAreaRect(cnt)
+        rect = cv.minAreaRect(cnt)
         w, h = rect[1]
-        box = cv2.boxPoints(rect)
+        box = cv.boxPoints(rect)
         box = np.int0(box)
         return box, w, h
 
@@ -216,30 +219,70 @@ class PixelLinkDecoder():
         self._get_all()
         self._mask_to_bboxes()
 
-    def plot_result(self, image):
+    def decode_sequence(self, prob):
+        symbols = '0123456789abcdefghijklmnopqrstuvwxyz '
+        sequence = ''
+        prev_pad = False
+        for pos in prob.reshape(30, 37):
+            idx = np.argmax(pos)
+            symbol = symbols[idx]
+            if symbol != ' ':
+                if sequence == '' or prev_pad or (sequence != '' and symbol != sequence[-1]):
+                    prev_pad = False
+                    sequence += symbols[idx]
+            else:
+                prev_pad = True
+        return sequence
+
+    def plot_result(self, image, recognNet):
         img_tmp = image.copy()
+        gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+        srcPts = np.array([[0, 0], [119, 0], [119, 31], [0, 31]], dtype=np.float32)
         for box in self.bboxes:
-            cv2.drawContours(img_tmp, [box], 0, (0, 0, 255), 2)
-        cv2.imshow('Detected text', img_tmp)
-        cv2.waitKey(0)
-        if cv2.waitKey():
-            cv2.destroyAllWindows()
+            m, _ = cv.findHomography(box, srcPts)
+            roi = cv.warpPerspective(gray, m, (120, 32))
+
+            recognNet.setInput(roi.reshape(1, 1, 32, 120))
+            out = recognNet.forward()
+            seq = self.decode_sequence(out)
+
+            cv.drawContours(img_tmp, [box], 0, (0, 0, 255), 2)
+
+            x = np.min([x for x in box[:,0]])
+            y = np.min([y for y in box[:,1]])
+            cv.putText(img_tmp, seq, (x, y), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0))
+
+
+        cv.imshow('Detected text', img_tmp)
+        # cv.waitKey(0)
+        # if cv.waitKey():
+        #     cv.destroyAllWindows()
 
 
 def main():
     if args.model_path.endswith('.xml'):
-        td = cv2.dnn.readNet(args.model_path, args.model_path[:-3] + 'bin')
+        td = cv.dnn.readNet(args.model_path, args.model_path[:-3] + 'bin')
+        recogn = cv.dnn.readNet(args.recogn_path, args.recogn_path[:-3] + 'bin')
+        # td.setPreferableTarget(cv.dnn.DNN_TARGET_MYRIAD)
+        # recogn.setPreferableTarget(cv.dnn.DNN_TARGET_MYRIAD)
     else:
         print("Not valid model's XML file name (should be something liike 'foo.xml')")
         sys.exit()
-    img = cv2.imread(args.image_path)
-    blob = cv2.dnn.blobFromImage(img, 1, (1280, 768))
-    td.setInput(blob)
-    a, b = td.forward(td.getUnconnectedOutLayersNames())
-    dcd = PixelLinkDecoder()
-    dcd.load(img, a, b)
-    dcd.decode()  # results are in dcd.bboxes
-    dcd.plot_result(img)
+    cap = cv.VideoCapture(0)
+    while cv.waitKey(1) < 0:
+        hasFrame, img = cap.read()
+        if not hasFrame:
+            break
+        # img = cv.imread(args.image_path)
+        blob = cv.dnn.blobFromImage(img, 1, (384, 384), ddepth=cv.CV_8U)
+        td.setInput(blob)
+        # startrTime = time.time()
+        a, b = td.forward(td.getUnconnectedOutLayersNames())
+        # print ((time.time() - startrTime)*1e+3)
+        dcd = PixelLinkDecoder()
+        dcd.load(img, a, b)
+        dcd.decode()  # results are in dcd.bboxes
+        dcd.plot_result(img, recogn)
 
 
 if __name__ == '__main__':
