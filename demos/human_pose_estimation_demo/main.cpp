@@ -9,6 +9,7 @@
 */
 
 #include <vector>
+#include <windows.h>
 
 #include <inference_engine.hpp>
 
@@ -44,6 +45,11 @@ bool ParseAndCheckCommandLine(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
+    cv::TickMeter rWristUpTime, lWristUpTime;
+    bool rWristUp = false, lWristUp = false;
+    rWristUpTime.start();
+    lWristUpTime.start();
+
     try {
         std::cout << "InferenceEngine: " << GetInferenceEngineVersion() << std::endl;
 
@@ -90,24 +96,76 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            renderHumanPose(poses, image);
+            if (!poses.empty()) {
+                cv::Point2f nose = poses[0].keypoints[0];
 
-            cv::Mat fpsPane(35, 155, CV_8UC3);
-            fpsPane.setTo(cv::Scalar(153, 119, 76));
-            cv::Mat srcRegion = image(cv::Rect(8, 8, fpsPane.cols, fpsPane.rows));
-            cv::addWeighted(srcRegion, 0.4, fpsPane, 0.6, 0, srcRegion);
-            std::stringstream fpsSs;
-            fpsSs << "FPS: " << int(1000.0f / inferenceTime * 100) / 100.0f;
-            cv::putText(image, fpsSs.str(), cv::Point(16, 32),
-                        cv::FONT_HERSHEY_COMPLEX, 0.8, cv::Scalar(0, 0, 255));
-            cv::imshow("ICV Human Pose Estimation", image);
+                cv::Point2f rWrist = poses[0].keypoints[4];
+                if (rWrist.y != -1 && rWrist.y < nose.y) {
+                    if (!rWristUp) {
+                        INPUT input;
+                        input.type = INPUT_KEYBOARD;
+                        input.ki.wVk = VK_RIGHT;
 
-            int key = cv::waitKey(delay) & 255;
-            if (key == 'p') {
-                delay = (delay == 0) ? 33 : 0;
-            } else if (key == 27) {
-                break;
+                        input.ki.dwFlags = 0;
+                        SendInput(1, &input, sizeof(INPUT));
+
+                        cv::waitKey(50);
+
+                        input.ki.dwFlags = KEYEVENTF_KEYUP;
+                        SendInput(1, &input, sizeof(INPUT));
+                    }
+                    rWristUp = true;
+                    rWristUpTime.reset();
+                    rWristUpTime.start();
+                }
+                else
+                {
+                    rWristUpTime.stop();
+                    if (rWristUpTime.getTimeSec() > 1)
+                        rWristUp = false;
+                    rWristUpTime.start();
+                }
+
+                cv::Point2f lWrist = poses[0].keypoints[7];
+                if (lWrist.y != -1 && lWrist.y < nose.y) {
+                    if (!lWristUp) {
+                        INPUT input;
+                        input.type = INPUT_KEYBOARD;
+                        input.ki.wVk = VK_LEFT;
+
+                        input.ki.dwFlags = 0;
+                        SendInput(1, &input, sizeof(INPUT));
+
+                        cv::waitKey(50);
+
+                        input.ki.dwFlags = KEYEVENTF_KEYUP;
+                        SendInput(1, &input, sizeof(INPUT));
+                    }
+                    lWristUp = true;
+                    lWristUpTime.reset();
+                    lWristUpTime.start();
+                }
+                else
+                {
+                    lWristUpTime.stop();
+                    if (lWristUpTime.getTimeSec() > 1)
+                        lWristUp = false;
+                    lWristUpTime.start();
+                }
             }
+
+            // renderHumanPose(poses, image);
+            //
+            // cv::Mat fpsPane(35, 155, CV_8UC3);
+            // fpsPane.setTo(cv::Scalar(153, 119, 76));
+            // cv::Mat srcRegion = image(cv::Rect(8, 8, fpsPane.cols, fpsPane.rows));
+            // cv::addWeighted(srcRegion, 0.4, fpsPane, 0.6, 0, srcRegion);
+            // std::stringstream fpsSs;
+            // fpsSs << "FPS: " << int(1000.0f / inferenceTime * 100) / 100.0f;
+            // cv::putText(image, fpsSs.str(), cv::Point(16, 32),
+            //             cv::FONT_HERSHEY_COMPLEX, 0.8, cv::Scalar(0, 0, 255));
+            // cv::imshow("ICV Human Pose Estimation", image);
+            // cv::waitKey(1);
         } while (cap.read(image));
     }
     catch (const std::exception& error) {
