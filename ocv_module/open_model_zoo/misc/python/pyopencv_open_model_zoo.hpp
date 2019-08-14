@@ -1,6 +1,6 @@
 #ifdef HAVE_OPENCV_OPEN_MODEL_ZOO
 
-typedef std::vector<HumanPose> vector_HumanPose;
+typedef std::vector<Pose> vector_Pose;
 
 #include <iostream>
 #include <string>
@@ -262,14 +262,14 @@ static Ptr<HumanPoseEstimation> createHumanPoseEstimation(const Topology& t, con
 
 }}  // namespace open_model_zoo
 
-template<> struct pyopencvVecConverter<HumanPose>
+template<> struct pyopencvVecConverter<Pose>
 {
-    static bool to(PyObject* obj, std::vector<HumanPose>& value, const ArgInfo info)
+    static bool to(PyObject* obj, std::vector<Pose>& value, const ArgInfo info)
     {
         return pyopencv_to_generic_vec(obj, value, info);
     }
 
-    static PyObject* from(const std::vector<HumanPose>& value)
+    static PyObject* from(const std::vector<Pose>& value)
     {
         return pyopencv_from_generic_vec(value);
     }

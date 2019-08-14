@@ -77,18 +77,6 @@ static cv::Mat cropImage(const cv::Mat &image, const std::vector<cv::Point2f> &p
     return crop;
 }
 
-static int strToDnnTarget(std::string device)
-{
-    std::transform(device.begin(), device.end(), device.begin(), ::tolower);
-    if (device == "cpu")        return dnn::DNN_TARGET_CPU;
-    else if (device == "gpu")   return dnn::DNN_TARGET_OPENCL;
-    else if (device == "vpu")   return dnn::DNN_TARGET_MYRIAD;
-    else if (device == "gpu16") return dnn::DNN_TARGET_OPENCL_FP16;
-    else if (device == "fpga")  return dnn::DNN_TARGET_FPGA;
-    else
-        CV_Error(Error::StsNotImplemented, "Unknown device target: " + device);
-}
-
 struct TextRecognitionPipeline::Impl
 {
     Ptr<dnn::Model> detectionNet;

@@ -29,9 +29,12 @@ endif()
 ocv_create_module(${INF_ENGINE_TARGET})
 ocv_add_accuracy_tests()
 
+target_include_directories(${the_module}
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../demos/human_pose_estimation_demo/include/"
+)
+
 if(INF_ENGINE_TARGET)
   target_include_directories(${the_module}
-      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../demos/human_pose_estimation_demo/include/"
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../demos/text_detection_demo/include/"
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../demos/common"
   )

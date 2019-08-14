@@ -70,6 +70,18 @@ Ptr<dnn::DetectionModel> DnnDetectionModel(const Topology& topology)
     return model;
 }
 
+int strToDnnTarget(std::string device)
+{
+    std::transform(device.begin(), device.end(), device.begin(), ::tolower);
+    if (device == "cpu")          return dnn::DNN_TARGET_CPU;
+    else if (device == "gpu")     return dnn::DNN_TARGET_OPENCL;
+    else if (device == "myriad")  return dnn::DNN_TARGET_MYRIAD;
+    else if (device == "gpu16")   return dnn::DNN_TARGET_OPENCL_FP16;
+    else if (device == "fpga")    return dnn::DNN_TARGET_FPGA;
+    else
+        CV_Error(Error::StsNotImplemented, "Unknown device target: " + device);
+}
+
 }}  // namespace cv::omz
 
 #endif  // HAVE_OPENCV_DNN

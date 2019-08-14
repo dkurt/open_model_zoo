@@ -78,7 +78,7 @@ TEST(HumanPoseEstimation, Accuracy)
     HumanPoseEstimation p;
 
     Mat img = imread(findDataFile("gpu/lbpcascade/er.png"));
-    std::vector<HumanPose> poses;
+    std::vector<Pose> poses;
     p.process(img, poses);
 
     ASSERT_EQ((int)poses.size(), 6);

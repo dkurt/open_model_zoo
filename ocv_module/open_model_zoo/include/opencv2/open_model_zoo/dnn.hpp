@@ -12,6 +12,8 @@ CV_EXPORTS_W Ptr<dnn::ClassificationModel> DnnClassificationModel(const Topology
 
 CV_EXPORTS_W Ptr<dnn::DetectionModel> DnnDetectionModel(const Topology& topology);
 
+int strToDnnTarget(std::string device);
+
 }}  // namespace cv::open_model_zoo
 
 #endif  // __OPENCV_OPEN_MODEL_ZOO_DNN_HPP__

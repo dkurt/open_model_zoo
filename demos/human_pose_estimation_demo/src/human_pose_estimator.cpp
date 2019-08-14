@@ -16,17 +16,28 @@
 namespace human_pose_estimation {
 const size_t HumanPoseEstimator::keypointsNumber = 18;
 
+static const float kFoundMidPointsRatioThreshold = 0.8f;
+static const float kMinSubsetScore = 0.2f;
+static const int kMinJointsNumber = 3;
+static const float kMidPointsScoreThreshold = 0.05f;
+static const float kMinPeaksDistance = 3.0f;
+
+void resizeFeatureMaps(std::vector<cv::Mat>& featureMaps, int upsampleRatio);
+
+std::vector<HumanPose> extractPoses(const std::vector<cv::Mat>& heatMaps,
+                                    const std::vector<cv::Mat>& pafs,
+                                    int keypointsNumber);
+
+void correctCoordinates(std::vector<HumanPose>& poses,
+                        const cv::Size& featureMapsSize, const cv::Size& imageSize,
+                        int stride, int upsampleRatio, const cv::Vec4i& pad);
+
 HumanPoseEstimator::HumanPoseEstimator(const std::string& modelPath,
                                        const std::string& targetDeviceName_,
                                        bool enablePerformanceReport)
-    : minJointsNumber(3),
-      stride(8),
+    : stride(8),
       pad(cv::Vec4i::all(0)),
       meanPixel(cv::Vec3f::all(128)),
-      minPeaksDistance(3.0f),
-      midPointsScoreThreshold(0.05f),
-      foundMidPointsRatioThreshold(0.8f),
-      minSubsetScore(0.2f),
       inputLayerSize(-1, -1),
       upsampleRatio(4),
       targetDeviceName(targetDeviceName_),
@@ -86,7 +97,8 @@ std::vector<HumanPose> HumanPoseEstimator::estimate(const cv::Mat& image) {
             pafsBlob->buffer(),
             heatMapDims[2] * heatMapDims[3],
             pafsBlob->getTensorDesc().getDims()[1],
-            heatMapDims[3], heatMapDims[2], imageSize);
+            heatMapDims[3], heatMapDims[2], imageSize,
+            pad, stride, upsampleRatio);
 
     return poses;
 }
@@ -108,11 +120,12 @@ void HumanPoseEstimator::preprocess(const cv::Mat& image, float* buffer) const {
     }
 }
 
-std::vector<HumanPose> HumanPoseEstimator::postprocess(
+std::vector<HumanPose> postprocess(
         const float* heatMapsData, const int heatMapOffset, const int nHeatMaps,
         const float* pafsData, const int pafOffset, const int nPafs,
         const int featureMapWidth, const int featureMapHeight,
-        const cv::Size& imageSize) const {
+        const cv::Size& imageSize, const cv::Vec4i& pad,
+        int stride, int upsampleRatio) {
     std::vector<cv::Mat> heatMaps(nHeatMaps);
     for (size_t i = 0; i < heatMaps.size(); i++) {
         heatMaps[i] = cv::Mat(featureMapHeight, featureMapWidth, CV_32FC1,
@@ -120,7 +133,7 @@ std::vector<HumanPose> HumanPoseEstimator::postprocess(
                                   const_cast<float*>(
                                       heatMapsData + i * heatMapOffset)));
     }
-    resizeFeatureMaps(heatMaps);
+    resizeFeatureMaps(heatMaps, upsampleRatio);
 
     std::vector<cv::Mat> pafs(nPafs);
     for (size_t i = 0; i < pafs.size(); i++) {
@@ -129,10 +142,10 @@ std::vector<HumanPose> HumanPoseEstimator::postprocess(
                               const_cast<float*>(
                                   pafsData + i * pafOffset)));
     }
-    resizeFeatureMaps(pafs);
+    resizeFeatureMaps(pafs, upsampleRatio);
 
-    std::vector<HumanPose> poses = extractPoses(heatMaps, pafs);
-    correctCoordinates(poses, heatMaps[0].size(), imageSize);
+    std::vector<HumanPose> poses = extractPoses(heatMaps, pafs, nHeatMaps);
+    correctCoordinates(poses, heatMaps[0].size(), imageSize, stride, upsampleRatio, pad);
     return poses;
 }
 
@@ -156,11 +169,12 @@ private:
     std::vector<std::vector<Peak> >& peaksFromHeatMap;
 };
 
-std::vector<HumanPose> HumanPoseEstimator::extractPoses(
+std::vector<HumanPose> extractPoses(
         const std::vector<cv::Mat>& heatMaps,
-        const std::vector<cv::Mat>& pafs) const {
+        const std::vector<cv::Mat>& pafs,
+        int keypointsNumber) {
     std::vector<std::vector<Peak> > peaksFromHeatMap(heatMaps.size());
-    FindPeaksBody findPeaksBody(heatMaps, minPeaksDistance, peaksFromHeatMap);
+    FindPeaksBody findPeaksBody(heatMaps, kMinPeaksDistance, peaksFromHeatMap);
     cv::parallel_for_(cv::Range(0, static_cast<int>(heatMaps.size())),
                       findPeaksBody);
     int peaksBefore = 0;
@@ -171,21 +185,23 @@ std::vector<HumanPose> HumanPoseEstimator::extractPoses(
         }
     }
     std::vector<HumanPose> poses = groupPeaksToPoses(
-                peaksFromHeatMap, pafs, keypointsNumber, midPointsScoreThreshold,
-                foundMidPointsRatioThreshold, minJointsNumber, minSubsetScore);
+                peaksFromHeatMap, pafs, keypointsNumber, kMidPointsScoreThreshold,
+                kFoundMidPointsRatioThreshold, kMinJointsNumber, kMinSubsetScore);
     return poses;
 }
 
-void HumanPoseEstimator::resizeFeatureMaps(std::vector<cv::Mat>& featureMaps) const {
+void resizeFeatureMaps(std::vector<cv::Mat>& featureMaps, int upsampleRatio) {
     for (auto& featureMap : featureMaps) {
         cv::resize(featureMap, featureMap, cv::Size(),
                    upsampleRatio, upsampleRatio, cv::INTER_CUBIC);
     }
 }
 
-void HumanPoseEstimator::correctCoordinates(std::vector<HumanPose>& poses,
-                                            const cv::Size& featureMapsSize,
-                                            const cv::Size& imageSize) const {
+void correctCoordinates(std::vector<HumanPose>& poses,
+                        const cv::Size& featureMapsSize,
+                        const cv::Size& imageSize,
+                        int stride, int upsampleRatio,
+                        const cv::Vec4i& pad) {
     CV_Assert(stride % upsampleRatio == 0);
 
     cv::Size fullFeatureMapSize = featureMapsSize * stride / upsampleRatio;

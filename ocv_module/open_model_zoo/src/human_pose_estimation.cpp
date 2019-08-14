@@ -1,85 +1,126 @@
 #include "opencv2/open_model_zoo.hpp"
 #include "opencv2/open_model_zoo/human_pose_estimation.hpp"
-#include "opencv2/open_model_zoo/dnn.hpp"
-#include "opencv2/dnn.hpp"
 #include "opencv2/imgproc.hpp"
 
 #include <iostream>
 
-// TODO: make it work without Inference Engine as well
-#ifdef HAVE_INF_ENGINE
 #include "human_pose.hpp"
-#include "human_pose_estimator.hpp"
 #include "render_human_pose.hpp"
 
-using namespace human_pose_estimation;
+#ifdef HAVE_INF_ENGINE
+#include "human_pose_estimator.hpp"
 #endif
+
+#ifdef HAVE_OPENCV_DNN
+#include "opencv2/open_model_zoo/dnn.hpp"
+#include "opencv2/dnn.hpp"
+#endif
+
+using namespace human_pose_estimation;
 
 namespace cv { namespace open_model_zoo {
 
 struct HumanPoseEstimationImpl::Impl
 {
+    Impl(const Topology& t, std::string device)
+    {
 #ifdef HAVE_INF_ENGINE
-    Impl(const std::string& modelPath, const std::string& device) : estimator(modelPath, device, false) {}
+        if (t.getOriginFramework() == "dldt")
+        {
+            std::string configPath = t.getConfigPath();
+            device = device == "GPU16" ? "GPU" : device;
+            estimator.reset(new HumanPoseEstimator(configPath, device, false));
+        }
+        else
+#endif
+        {
+#ifdef HAVE_OPENCV_DNN
+            dnnNet = DnnModel(t);
+            dnnNet->setPreferableTarget(strToDnnTarget(device));
+#endif
+        }
+    }
 
-    HumanPoseEstimator estimator;
+    void process(Mat frame, std::vector<HumanPose>& poses)
+    {
+#ifdef HAVE_INF_ENGINE
+        if (!estimator.empty())
+            poses = estimator->estimate(frame);
+#endif
+
+#ifdef HAVE_OPENCV_DNN
+        if (!dnnNet.empty())
+        {
+            std::vector<Mat> outs;
+            dnnNet->predict(frame, outs);
+            CV_Assert(outs.size() == 1);
+
+            float* heatMapsData = outs[0].ptr<float>(0, 0);
+            int mapOffset = outs[0].size[2] * outs[0].size[3];
+
+            // COCO pose
+            float* pafsData = outs[0].ptr<float>(0, 19);
+            poses = postprocess(heatMapsData, mapOffset, 18,
+                                pafsData, mapOffset, 38,
+                                outs[0].size[3], outs[0].size[2],
+                                frame.size(), Vec4i(), 8, 4);
+        }
+#endif
+    }
+
+#ifdef HAVE_INF_ENGINE
+    Ptr<HumanPoseEstimator> estimator;
+#endif
+
+#ifdef HAVE_OPENCV_DNN
+    Ptr<dnn::Model> dnnNet;
 #endif
 };
 
 HumanPoseEstimation::HumanPoseEstimationImpl(const std::string& device)
 {
-#ifndef HAVE_INF_ENGINE
-    CV_Error(Error::StsNotImplemented, "Human pose estimation without Inference Engine");
-#endif
-
     Topology t;
+#ifdef HAVE_INF_ENGINE
     if (device == "GPU16" || device == "MYRIAD")
         t = topologies::human_pose_estimation_fp16();
     else
         t = topologies::human_pose_estimation();
-
-    impl.reset(new Impl(t.getConfigPath(), device == "GPU16" ? "GPU" : device));
+#elif defined(HAVE_OPENCV_DNN)
+    t = openpose_coco();
+#else
+    CV_Error(Error::StsError, "OpenCV or Inference Engine is required");
+#endif
+    impl.reset(new Impl(t, device));
 }
 
 HumanPoseEstimation::HumanPoseEstimationImpl(const Topology& t, const std::string& device)
+    : impl(new Impl(t, device))
 {
-#ifndef HAVE_INF_ENGINE
-    CV_Error(Error::StsNotImplemented, "Human pose estimation without Inference Engine");
-#endif
-    impl.reset(new Impl(t.getConfigPath(), device));
 }
 
-void HumanPoseEstimation::process(InputArray frame, CV_OUT std::vector<HumanPose>& humanPoses)
+void HumanPoseEstimation::process(InputArray frame, CV_OUT std::vector<Pose>& humanPoses)
 {
-#ifdef HAVE_INF_ENGINE
-    auto poses = impl->estimator.estimate(frame.getMat());
+    std::vector<HumanPose> poses;
+    impl->process(frame.getMat(), poses);
+
     humanPoses.resize(poses.size());
     for (size_t i = 0; i < poses.size(); ++i)
     {
         humanPoses[i].keypoints = poses[i].keypoints;
         humanPoses[i].type = "COCO";
     }
-#else
-    CV_UNUSED(frame); CV_UNUSED(humanPoses);
-    CV_Error(Error::StsNotImplemented, "Inference Engine is required");
-#endif
 }
 
-void HumanPoseEstimation::render(InputOutputArray frame, const std::vector<HumanPose>& humanPoses)
+void HumanPoseEstimation::render(InputOutputArray frame, const std::vector<Pose>& humanPoses)
 {
-#ifdef HAVE_INF_ENGINE
     Mat img = frame.getMat();
 
-    std::vector<human_pose_estimation::HumanPose> poses(humanPoses.size());
+    std::vector<HumanPose> poses(humanPoses.size());
     for (size_t i = 0; i < poses.size(); ++i)
     {
         poses[i].keypoints = humanPoses[i].keypoints;
     }
     renderHumanPose(poses, img);
-#else
-    CV_UNUSED(frame); CV_UNUSED(humanPoses);
-    CV_Error(Error::StsNotImplemented, "Inference Engine is required");
-#endif
 }
 
 }}  // namespace cv::open_model_zoo

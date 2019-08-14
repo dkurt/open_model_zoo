@@ -26,7 +26,7 @@ CV_WRAP_AS(HumanPoseEstimation)
 Ptr<HumanPoseEstimation> createHumanPoseEstimation(const Topology& t, const String& device = "CPU");
 #endif
 
-struct CV_EXPORTS_W_SIMPLE HumanPose
+struct CV_EXPORTS_W_SIMPLE Pose
 {
     CV_PROP std::vector<cv::Point2f> keypoints;
     CV_PROP String type;  // COCO or MPI
@@ -51,9 +51,9 @@ public:
      */
     CV_WRAP HumanPoseEstimationImpl(const Topology& t, const String& device = "CPU");
 
-    CV_WRAP void process(InputArray frame, CV_OUT std::vector<HumanPose>& poses);
+    CV_WRAP void process(InputArray frame, CV_OUT std::vector<Pose>& poses);
 
-    CV_WRAP static void render(InputOutputArray frame, const std::vector<HumanPose>& poses);
+    CV_WRAP static void render(InputOutputArray frame, const std::vector<Pose>& poses);
 
 private:
     struct Impl;
