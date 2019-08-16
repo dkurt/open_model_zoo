@@ -202,6 +202,8 @@ parser.add_argument('--list', type = Path, metavar = 'FILE.LST',
     help = 'download only topologies whose names match at least one of the patterns in the specified file')
 parser.add_argument('--all',  action = 'store_true', help = 'download all topologies from the configuration file')
 parser.add_argument('--print_all', action = 'store_true', help = 'print all available topologies')
+parser.add_argument('--precisions', metavar='PREC[,PREC...]',
+    help='download only models with the specified precisions (actual for DLDT networks)')
 parser.add_argument('-o', '--output_dir', type = Path, metavar = 'DIR',
     default = Path.cwd(), help = 'path where to save topologies')
 parser.add_argument('--cache_dir', type = Path, metavar = 'DIR',
@@ -213,6 +215,14 @@ args = parser.parse_args()
 cache = NullCache() if args.cache_dir is None else DirCache(args.cache_dir)
 topologies = common.load_topologies_from_args(parser, args)
 
+if args.precisions is None:
+    requested_precisions = common.KNOWN_PRECISIONS
+else:
+    requested_precisions = set(args.precisions.split(','))
+    unknown_precisions = requested_precisions - common.KNOWN_PRECISIONS
+    if unknown_precisions:
+        sys.exit('Unknown precisions specified: {}.'.format(', '.join(sorted(unknown_precisions))))
+
 print('')
 print('###############|| Downloading topologies ||###############')
 print('')
@@ -222,6 +232,11 @@ with requests.Session() as session:
         output.mkdir(parents=True, exist_ok=True)
 
         for top_file in top.files:
+            # Download only files with specific precision.
+            prefix = str(top_file.name)[:str(top_file.name).find('/')]
+            if prefix in common.KNOWN_PRECISIONS and not prefix in requested_precisions:
+                continue
+
             destination = output / top_file.name
 
             try_retrieve(top.name, destination, top_file.sha256, cache, args.num_attempts,
