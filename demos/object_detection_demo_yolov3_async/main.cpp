@@ -475,6 +475,8 @@ int main(int argc, char *argv[]) {
         std::cout << "To switch between sync/async modes, press TAB key in the output window" << std::endl;
 
         cv::namedWindow("Detection results", cv::WINDOW_NORMAL);
+        // // Uncomment to render video
+      	// cv::VideoWriter writer("predictions.mp4", cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), 30, frame.size());
         while (cv::waitKey(30) != 27) {
             if (predictionsQueue.empty())
                 continue;
@@ -496,18 +498,27 @@ int main(int argc, char *argv[]) {
                               cv::Point2f(static_cast<float>(object.xmax), static_cast<float>(object.ymax)), cv::Scalar(0, 255, 0));
             }
             putText(frame, cv::format("video fps: %.2f", framesQueue.getFPS()),
-                    cv::Point(0, 15), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+                    cv::Point(10, 15), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
             putText(frame, cv::format("network fps: %.2f", predictionsQueue.getFPS()),
-                    cv::Point(0, 35), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+                    cv::Point(10, 35), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
             putText(frame, cv::format("render queue: %d", (int)processedFramesQueue.size()),
-                    cv::Point(0, 55), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+                    cv::Point(10, 55), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+            putText(frame, cv::format("%d async requests", (int)FLAGS_async),
+                    cv::Point(10, 75), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+
 
             cv::imshow("Detection results", frame);
+            // // Uncomment to render video
+            // writer << frame;
 
+            // // Uncomment to collect efficiency
             // if (predictionsQueue.counter > 500)
             //     break;
         }
+        // // Uncomment to render video
+        // writer.release();
 
+        // // Uncomment to collect efficiency
         // std::ofstream outfile("perf.txt", std::ios_base::app);
         // outfile << (int)FLAGS_async << " " << predictionsQueue.getFPS() << std::endl;
 
