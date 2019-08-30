@@ -185,11 +185,16 @@ int main(int argc, char *argv[]) {
         }
 
         // read input (video) frame
-        cv::Mat frame;  cap >> frame;
-        cv::Mat next_frame;
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+        cv::Mat frame;
+        cap >> frame;
 
-        const size_t width  = (size_t) cap.get(cv::CAP_PROP_FRAME_WIDTH);
-        const size_t height = (size_t) cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+        // const size_t width  = (size_t) cap.get(cv::CAP_PROP_FRAME_WIDTH);
+        // const size_t height = (size_t) cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+        const size_t width  = frame.cols;
+        const size_t height = frame.rows;
+
 
         if (!cap.grab()) {
             throw std::logic_error("This demo supports only video (or camera) inputs !!! "
@@ -285,90 +290,103 @@ int main(int argc, char *argv[]) {
 
         // -----------------------------------------------------------------------------------------------------
 
+        // std::queue<Mat> framesQueue;
+        // std::queue<Mat> processedFramesQueue;
+        // std::queue<Mat> predictionsQueue;
+
         // --------------------------- 5. Creating infer request -----------------------------------------------
-        InferRequest::Ptr async_infer_request_next = network.CreateInferRequestPtr();
-        InferRequest::Ptr async_infer_request_curr = network.CreateInferRequestPtr();
+        std::vector<InferRequest::Ptr> async_infer_requests(20);
+        std::vector<int> async_infer_is_free(async_infer_requests.size(), true);
+        std::vector<int> async_infer_is_ready(async_infer_requests.size(), false);
+        std::vector<cv::Mat> frames(async_infer_requests.size());
+        for (size_t i = 0; i < async_infer_requests.size(); ++i)
+        {
+            async_infer_requests[i] = network.CreateInferRequestPtr();
+
+            IInferRequest::Ptr infRequestPtr = *async_infer_requests[i].get();
+            infRequestPtr->SetUserData(&async_infer_is_ready[i], 0);
+            infRequestPtr->SetCompletionCallback(
+                [](InferenceEngine::IInferRequest::Ptr request, InferenceEngine::StatusCode)
+                {
+                    int* is_ready;
+                    request->GetUserData((void**)&is_ready, 0);
+                    *is_ready = 1;
+                }
+            );
+        }
         // -----------------------------------------------------------------------------------------------------
 
         // --------------------------- 6. Doing inference ------------------------------------------------------
         slog::info << "Start inference " << slog::endl;
 
-        bool isLastFrame = false;
-        bool isAsyncMode = false;  // execution is always started using SYNC mode
-        bool isModeChanged = false;  // set to TRUE when execution mode is changed (SYNC<->ASYNC)
+        bool isAsyncMode = true;  // execution is always started using SYNC mode
 
-        typedef std::chrono::duration<double, std::ratio<1, 1000>> ms;
-        auto total_t0 = std::chrono::high_resolution_clock::now();
-        auto wallclock = std::chrono::high_resolution_clock::now();
-        double ocv_decode_time = 0, ocv_render_time = 0;
+        cv::TickMeter tm;
+
+        // typedef std::chrono::duration<double, std::ratio<1, 1000>> ms;
+        // ms total_t0 = std::chrono::high_resolution_clock::now();
+        // auto wallclock = std::chrono::high_resolution_clock::now();
+        // double ocv_decode_time = 0, ocv_render_time = 0;
 
         std::cout << "To close the application, press 'CTRL+C' here or switch to the output window and press ESC key" << std::endl;
         std::cout << "To switch between sync/async modes, press TAB key in the output window" << std::endl;
+        int numFramesProcessed = 0;
         while (true) {
-            auto t0 = std::chrono::high_resolution_clock::now();
             // Here is the first asynchronous point:
             // in the Async mode, we capture frame to populate the NEXT infer request
             // in the regular mode, we capture frame to the CURRENT infer request
-            if (!cap.read(next_frame)) {
-                if (next_frame.empty()) {
-                    isLastFrame = true;  // end of video file
-                } else {
-                    throw std::logic_error("Failed to get frame from cv::VideoCapture");
-                }
-            }
-            if (isAsyncMode) {
-                if (isModeChanged) {
-                    FrameToBlob(frame, async_infer_request_curr, inputName);
-                }
-                if (!isLastFrame) {
-                    FrameToBlob(next_frame, async_infer_request_next, inputName);
-                }
-            } else if (!isModeChanged) {
-                FrameToBlob(frame, async_infer_request_curr, inputName);
-            }
-            auto t1 = std::chrono::high_resolution_clock::now();
-            ocv_decode_time = std::chrono::duration_cast<ms>(t1 - t0).count();
+            cap.read(frame);
+            if (frame.empty())
+                break;
 
-            t0 = std::chrono::high_resolution_clock::now();
+            InferRequest::Ptr request;
+            if (isAsyncMode) {
+                for (size_t i = 0; i < async_infer_requests.size(); ++i) {
+                    InferRequest::Ptr req = async_infer_requests[i];
+                    if (async_infer_is_free[i]) {
+                        request = req;
+                        frame.copyTo(frames[i]);
+                        async_infer_is_free[i] = false;
+                        async_infer_is_ready[i] = false;
+                        break;
+                    }
+                }
+            } else {
+                request = async_infer_requests[0];
+                frame.copyTo(frames[0]);
+            }
+
+            // auto t1 = std::chrono::high_resolution_clock::now();
+            // ocv_decode_time = std::chrono::duration_cast<ms>(t1 - t0).count();
+
+            // t0 = std::chrono::high_resolution_clock::now();
             // Main sync point:
             // in the true Async mode, we start the NEXT infer request while waiting for the CURRENT to complete
             // in the regular mode, we start the CURRENT request and wait for its completion
-            if (isAsyncMode) {
-                if (isModeChanged) {
-                    async_infer_request_curr->StartAsync();
-                }
-                if (!isLastFrame) {
-                    async_infer_request_next->StartAsync();
-                }
-            } else if (!isModeChanged) {
-                async_infer_request_curr->StartAsync();
+            if (request)
+            {
+                FrameToBlob(frame, request, inputName);
+                if (isAsyncMode)
+                    request->StartAsync();
+                else
+                    request->Infer();
             }
 
-            if (OK == async_infer_request_curr->Wait(IInferRequest::WaitMode::RESULT_READY)) {
-                t1 = std::chrono::high_resolution_clock::now();
-                ms detection = std::chrono::duration_cast<ms>(t1 - t0);
+            for (size_t k = 0; k < async_infer_requests.size(); ++k) {
+                if (!async_infer_is_ready[k])
+                    continue;
 
-                t0 = std::chrono::high_resolution_clock::now();
-                ms wall = std::chrono::duration_cast<ms>(t0 - wallclock);
-                wallclock = t0;
-
-                t0 = std::chrono::high_resolution_clock::now();
-                std::ostringstream out;
-                out << "OpenCV cap/render time: " << std::fixed << std::setprecision(2)
-                    << (ocv_decode_time + ocv_render_time) << " ms";
-                cv::putText(frame, out.str(), cv::Point2f(0, 25), cv::FONT_HERSHEY_TRIPLEX, 0.6, cv::Scalar(0, 255, 0));
-                out.str("");
-                out << "Wallclock time " << (isAsyncMode ? "(TRUE ASYNC):      " : "(SYNC, press Tab): ");
-                out << std::fixed << std::setprecision(2) << wall.count() << " ms (" << 1000.f / wall.count() << " fps)";
-                cv::putText(frame, out.str(), cv::Point2f(0, 50), cv::FONT_HERSHEY_TRIPLEX, 0.6, cv::Scalar(0, 0, 255));
-                if (!isAsyncMode) {  // In the true async mode, there is no way to measure detection time directly
-                    out.str("");
-                    out << "Detection time  : " << std::fixed << std::setprecision(2) << detection.count()
-                        << " ms ("
-                        << 1000.f / detection.count() << " fps)";
-                    cv::putText(frame, out.str(), cv::Point2f(0, 75), cv::FONT_HERSHEY_TRIPLEX, 0.6,
-                                cv::Scalar(255, 0, 0));
+                numFramesProcessed += 1;
+                if (numFramesProcessed == 100)
+                {
+                    tm.reset();
+                    tm.start();
                 }
+
+                request = async_infer_requests[k];
+                frame = frames[k];
+                async_infer_is_free[k] = true;
+                async_infer_is_ready[k] = false;
 
                 // ---------------------------Processing output blobs--------------------------------------------------
                 // Processing results of the CURRENT request
@@ -380,7 +398,7 @@ int main(int argc, char *argv[]) {
                 for (auto &output : outputInfo) {
                     auto output_name = output.first;
                     CNNLayerPtr layer = netReader.getNetwork().getLayerByName(output_name.c_str());
-                    Blob::Ptr blob = async_infer_request_curr->GetBlob(output_name);
+                    Blob::Ptr blob = request->GetBlob(output_name);
                     ParseYOLOV3Output(layer, blob, resized_im_h, resized_im_w, height, width, FLAGS_t, objects);
                 }
                 // Filtering overlapping boxes
@@ -416,26 +434,7 @@ int main(int argc, char *argv[]) {
                                       cv::Point2f(static_cast<float>(object.xmax), static_cast<float>(object.ymax)), cv::Scalar(0, 0, 255));
                     }
                 }
-            }
-            cv::imshow("Detection results", frame);
-
-            t1 = std::chrono::high_resolution_clock::now();
-            ocv_render_time = std::chrono::duration_cast<ms>(t1 - t0).count();
-
-            if (isLastFrame) {
-                break;
-            }
-
-            if (isModeChanged) {
-                isModeChanged = false;
-            }
-
-            // Final point:
-            // in the truly Async mode, we swap the NEXT and CURRENT requests for the next iteration
-            frame = next_frame;
-            next_frame = cv::Mat();
-            if (isAsyncMode) {
-                async_infer_request_curr.swap(async_infer_request_next);
+                cv::imshow("Detection results", frame);
             }
 
             const int key = cv::waitKey(1);
@@ -443,18 +442,13 @@ int main(int argc, char *argv[]) {
                 break;
             if (9 == key) {  // Tab
                 isAsyncMode ^= true;
-                isModeChanged = true;
             }
+
+            tm.stop();
+            std::cout << "Total Inference time: " << (numFramesProcessed - 100) / tm.getTimeSec() << std::endl;
+            tm.start();
         }
         // -----------------------------------------------------------------------------------------------------
-        auto total_t1 = std::chrono::high_resolution_clock::now();
-        ms total = std::chrono::duration_cast<ms>(total_t1 - total_t0);
-        std::cout << "Total Inference time: " << total.count() << std::endl;
-
-        /** Showing performace results **/
-        if (FLAGS_pc) {
-            printPerformanceCounts(*async_infer_request_curr, std::cout, getFullDeviceName(ie, FLAGS_d));
-        }
     }
     catch (const std::exception& error) {
         std::cerr << "[ ERROR ] " << error.what() << std::endl;
