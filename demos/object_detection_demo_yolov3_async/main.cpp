@@ -10,6 +10,7 @@
 #include <gflags/gflags.h>
 #include <functional>
 #include <iostream>
+#include <thread>
 #include <fstream>
 #include <random>
 #include <memory>
@@ -104,6 +105,56 @@ double IntersectionOverUnion(const DetectionObject &box_1, const DetectionObject
     return area_of_overlap / area_of_union;
 }
 
+template <typename T>
+class QueueFPS : public std::queue<T>
+{
+public:
+    QueueFPS() : counter(0) {}
+
+    void push(const T& entry)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+
+        std::queue<T>::push(entry);
+        counter += 1;
+        if (counter == 1)
+        {
+            // Start counting from a second frame (warmup).
+            tm.reset();
+            tm.start();
+        }
+    }
+
+    T get()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        T entry = this->front();
+        this->pop();
+        return entry;
+    }
+
+    float getFPS()
+    {
+        tm.stop();
+        double fps = counter / tm.getTimeSec();
+        tm.start();
+        return static_cast<float>(fps);
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        while (!this->empty())
+            this->pop();
+    }
+
+    unsigned int counter;
+
+private:
+    cv::TickMeter tm;
+    std::mutex mutex;
+};
+
 void ParseYOLOV3Output(const CNNLayerPtr &layer, const Blob::Ptr &blob, const unsigned long resized_im_h,
                        const unsigned long resized_im_w, const unsigned long original_im_h,
                        const unsigned long original_im_w,
@@ -185,16 +236,11 @@ int main(int argc, char *argv[]) {
         }
 
         // read input (video) frame
-        cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
         cv::Mat frame;
         cap >> frame;
 
-        // const size_t width  = (size_t) cap.get(cv::CAP_PROP_FRAME_WIDTH);
-        // const size_t height = (size_t) cap.get(cv::CAP_PROP_FRAME_HEIGHT);
         const size_t width  = frame.cols;
         const size_t height = frame.rows;
-
 
         if (!cap.grab()) {
             throw std::logic_error("This demo supports only video (or camera) inputs !!! "
@@ -288,166 +334,183 @@ int main(int argc, char *argv[]) {
         slog::info << "Loading model to the device" << slog::endl;
         ExecutableNetwork network = ie.LoadNetwork(netReader.getNetwork(), FLAGS_d);
 
-        // -----------------------------------------------------------------------------------------------------
-
-        // std::queue<Mat> framesQueue;
-        // std::queue<Mat> processedFramesQueue;
-        // std::queue<Mat> predictionsQueue;
-
         // --------------------------- 5. Creating infer request -----------------------------------------------
-        std::vector<InferRequest::Ptr> async_infer_requests(20);
-        std::vector<int> async_infer_is_free(async_infer_requests.size(), true);
-        std::vector<int> async_infer_is_ready(async_infer_requests.size(), false);
-        std::vector<cv::Mat> frames(async_infer_requests.size());
-        for (size_t i = 0; i < async_infer_requests.size(); ++i)
-        {
-            async_infer_requests[i] = network.CreateInferRequestPtr();
+        bool process = true;
 
-            IInferRequest::Ptr infRequestPtr = *async_infer_requests[i].get();
-            infRequestPtr->SetUserData(&async_infer_is_ready[i], 0);
-            infRequestPtr->SetCompletionCallback(
-                [](InferenceEngine::IInferRequest::Ptr request, InferenceEngine::StatusCode)
+        // Frames capturing thread
+        QueueFPS<cv::Mat> framesQueue;
+        std::thread framesThread([&](){
+            cv::Mat frame;
+            while (process)
+            {
+                cap >> frame;
+                if (!frame.empty())
+                    framesQueue.push(frame.clone());
+                else
+                    break;
+                // To regulate video FPS
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+        });
+
+        // Processing thread
+        QueueFPS<cv::Mat> processedFramesQueue;
+        QueueFPS<std::vector<DetectionObject> > predictionsQueue;
+        std::thread processingThread([&](){
+
+            std::vector<InferRequest::Ptr> async_infer_requests(FLAGS_async);
+            std::vector<int> async_infer_is_free(async_infer_requests.size(), true);
+            std::vector<int> async_infer_is_ready(async_infer_requests.size(), false);
+            std::vector<int> async_infer_is_fake(async_infer_requests.size(), false);
+            for (size_t i = 0; i < async_infer_requests.size(); ++i)
+            {
+                async_infer_requests[i] = network.CreateInferRequestPtr();
+
+                IInferRequest::Ptr infRequestPtr = *async_infer_requests[i].get();
+                infRequestPtr->SetUserData(&async_infer_is_ready[i], 0);
+                infRequestPtr->SetCompletionCallback(
+                    [](InferenceEngine::IInferRequest::Ptr request, InferenceEngine::StatusCode)
+                    {
+                        int* is_ready;
+                        request->GetUserData((void**)&is_ready, 0);
+                        *is_ready = 1;
+                    }
+                );
+            }
+
+            std::queue<int> started_requests_ids;
+            cv::Mat frame;
+            while (process)
+            {
+                bool fakeFrame = true;
+                if (!framesQueue.empty())
                 {
-                    int* is_ready;
-                    request->GetUserData((void**)&is_ready, 0);
-                    *is_ready = 1;
+                    frame = framesQueue.get();
+                    fakeFrame = false;
                 }
-            );
-        }
+
+                if (frame.empty())
+                    continue;
+
+                bool started = false;
+                while (!started)
+                {
+                    //
+                    // Check for finished requests and start a new one
+                    //
+                    for (size_t i = 0; i < async_infer_requests.size(); ++i) {
+                        if (async_infer_is_free[i]) {
+                            InferRequest::Ptr request = async_infer_requests[i];
+
+                            async_infer_is_free[i] = false;
+                            async_infer_is_ready[i] = false;
+                            async_infer_is_fake[i] = fakeFrame;
+                            if (!fakeFrame)
+                                processedFramesQueue.push(frame);  // predictionsQueue is used in rendering
+
+                            FrameToBlob(frame, request, inputName);
+                            started_requests_ids.push(i);
+                            request->StartAsync();
+                            started = true;
+                            break;
+                        }
+                    }
+
+                    //
+                    // Postprocess finished requests.
+                    //
+                    if (started_requests_ids.empty())
+                        continue;
+
+                    int request_id = started_requests_ids.front();
+                    if (async_infer_is_ready[request_id])
+                    {
+                        InferRequest::Ptr request = async_infer_requests[request_id];
+                        async_infer_is_free[request_id] = true;
+                        async_infer_is_ready[request_id] = false;
+                        started_requests_ids.pop();
+
+                        // ---------------------------Processing output blobs--------------------------------------------------
+                        // Processing results of the CURRENT request
+                        const TensorDesc& inputDesc = inputInfo.begin()->second.get()->getTensorDesc();
+                        unsigned long resized_im_h = getTensorHeight(inputDesc);
+                        unsigned long resized_im_w = getTensorWidth(inputDesc);
+                        std::vector<DetectionObject> objects;
+                        // Parsing outputs
+                        for (auto &output : outputInfo) {
+                            auto output_name = output.first;
+                            CNNLayerPtr layer = netReader.getNetwork().getLayerByName(output_name.c_str());
+                            Blob::Ptr blob = request->GetBlob(output_name);
+                            ParseYOLOV3Output(layer, blob, resized_im_h, resized_im_w, height, width, FLAGS_t, objects);
+                        }
+                        // Filtering overlapping boxes
+                        std::sort(objects.begin(), objects.end(), std::greater<DetectionObject>());
+                        for (size_t i = 0; i < objects.size(); ++i) {
+                            if (objects[i].confidence == 0)
+                                continue;
+                            for (size_t j = i + 1; j < objects.size(); ++j)
+                                if (IntersectionOverUnion(objects[i], objects[j]) >= FLAGS_iou_t)
+                                    objects[j].confidence = 0;
+                        }
+                        // Adding predictions to the queue
+                        std::vector<DetectionObject> detections;
+                        for (auto &object : objects) {
+                            if (object.confidence > FLAGS_t)
+                                detections.push_back(object);
+                        }
+                        if (!async_infer_is_fake[request_id])
+                            predictionsQueue.push(detections);
+                        else
+                            predictionsQueue.counter += 1;
+                    }
+                }
+            }
+        });
+
         // -----------------------------------------------------------------------------------------------------
 
         // --------------------------- 6. Doing inference ------------------------------------------------------
         slog::info << "Start inference " << slog::endl;
-
-        bool isAsyncMode = true;  // execution is always started using SYNC mode
-
-        cv::TickMeter tm;
-
-        // typedef std::chrono::duration<double, std::ratio<1, 1000>> ms;
-        // ms total_t0 = std::chrono::high_resolution_clock::now();
-        // auto wallclock = std::chrono::high_resolution_clock::now();
-        // double ocv_decode_time = 0, ocv_render_time = 0;
-
         std::cout << "To close the application, press 'CTRL+C' here or switch to the output window and press ESC key" << std::endl;
         std::cout << "To switch between sync/async modes, press TAB key in the output window" << std::endl;
-        int numFramesProcessed = 0;
-        while (true) {
-            // Here is the first asynchronous point:
-            // in the Async mode, we capture frame to populate the NEXT infer request
-            // in the regular mode, we capture frame to the CURRENT infer request
-            cap.read(frame);
-            if (frame.empty())
-                break;
 
-            InferRequest::Ptr request;
-            if (isAsyncMode) {
-                for (size_t i = 0; i < async_infer_requests.size(); ++i) {
-                    InferRequest::Ptr req = async_infer_requests[i];
-                    if (async_infer_is_free[i]) {
-                        request = req;
-                        frame.copyTo(frames[i]);
-                        async_infer_is_free[i] = false;
-                        async_infer_is_ready[i] = false;
-                        break;
-                    }
-                }
-            } else {
-                request = async_infer_requests[0];
-                frame.copyTo(frames[0]);
+        cv::namedWindow("Detection results", cv::WINDOW_NORMAL);
+        while (cv::waitKey(30) != 27) {
+            if (predictionsQueue.empty())
+                continue;
+
+            std::vector<DetectionObject> detections = predictionsQueue.get();
+            cv::Mat frame = processedFramesQueue.get();
+
+            for (const auto& object : detections) {
+                int label = object.class_id;
+                /** Drawing only objects when >confidence_threshold probability **/
+                std::ostringstream conf;
+                conf << ":" << std::fixed << std::setprecision(3) << object.confidence;
+                cv::putText(frame,
+                        (label < static_cast<int>(labels.size()) ?
+                                labels[label] : std::string("label #") + std::to_string(label)) + conf.str(),
+                            cv::Point2f(static_cast<float>(object.xmin), static_cast<float>(object.ymin - 5)), cv::FONT_HERSHEY_COMPLEX_SMALL, 1,
+                            cv::Scalar(0, 255, 0));
+                cv::rectangle(frame, cv::Point2f(static_cast<float>(object.xmin), static_cast<float>(object.ymin)),
+                              cv::Point2f(static_cast<float>(object.xmax), static_cast<float>(object.ymax)), cv::Scalar(0, 255, 0));
             }
+            putText(frame, cv::format("video fps: %.2f", framesQueue.getFPS()),
+                    cv::Point(0, 15), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+            putText(frame, cv::format("network fps: %.2f", predictionsQueue.getFPS()),
+                    cv::Point(0, 35), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+            putText(frame, cv::format("render queue: %d", (int)processedFramesQueue.size()),
+                    cv::Point(0, 55), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
 
-            // auto t1 = std::chrono::high_resolution_clock::now();
-            // ocv_decode_time = std::chrono::duration_cast<ms>(t1 - t0).count();
+            cv::imshow("Detection results", frame);
 
-            // t0 = std::chrono::high_resolution_clock::now();
-            // Main sync point:
-            // in the true Async mode, we start the NEXT infer request while waiting for the CURRENT to complete
-            // in the regular mode, we start the CURRENT request and wait for its completion
-            if (request)
-            {
-                FrameToBlob(frame, request, inputName);
-                if (isAsyncMode)
-                    request->StartAsync();
-                else
-                    request->Infer();
-            }
-
-            for (size_t k = 0; k < async_infer_requests.size(); ++k) {
-                if (!async_infer_is_ready[k])
-                    continue;
-
-                numFramesProcessed += 1;
-                if (numFramesProcessed == 100)
-                {
-                    tm.reset();
-                    tm.start();
-                }
-
-                request = async_infer_requests[k];
-                frame = frames[k];
-                async_infer_is_free[k] = true;
-                async_infer_is_ready[k] = false;
-
-                // ---------------------------Processing output blobs--------------------------------------------------
-                // Processing results of the CURRENT request
-                const TensorDesc& inputDesc = inputInfo.begin()->second.get()->getTensorDesc();
-                unsigned long resized_im_h = getTensorHeight(inputDesc);
-                unsigned long resized_im_w = getTensorWidth(inputDesc);
-                std::vector<DetectionObject> objects;
-                // Parsing outputs
-                for (auto &output : outputInfo) {
-                    auto output_name = output.first;
-                    CNNLayerPtr layer = netReader.getNetwork().getLayerByName(output_name.c_str());
-                    Blob::Ptr blob = request->GetBlob(output_name);
-                    ParseYOLOV3Output(layer, blob, resized_im_h, resized_im_w, height, width, FLAGS_t, objects);
-                }
-                // Filtering overlapping boxes
-                std::sort(objects.begin(), objects.end(), std::greater<DetectionObject>());
-                for (size_t i = 0; i < objects.size(); ++i) {
-                    if (objects[i].confidence == 0)
-                        continue;
-                    for (size_t j = i + 1; j < objects.size(); ++j)
-                        if (IntersectionOverUnion(objects[i], objects[j]) >= FLAGS_iou_t)
-                            objects[j].confidence = 0;
-                }
-                // Drawing boxes
-                for (auto &object : objects) {
-                    if (object.confidence < FLAGS_t)
-                        continue;
-                    auto label = object.class_id;
-                    float confidence = object.confidence;
-                    if (FLAGS_r) {
-                        std::cout << "[" << label << "] element, prob = " << confidence <<
-                                  "    (" << object.xmin << "," << object.ymin << ")-(" << object.xmax << "," << object.ymax << ")"
-                                  << ((confidence > FLAGS_t) ? " WILL BE RENDERED!" : "") << std::endl;
-                    }
-                    if (confidence > FLAGS_t) {
-                        /** Drawing only objects when >confidence_threshold probability **/
-                        std::ostringstream conf;
-                        conf << ":" << std::fixed << std::setprecision(3) << confidence;
-                        cv::putText(frame,
-                                (label < static_cast<int>(labels.size()) ?
-                                        labels[label] : std::string("label #") + std::to_string(label)) + conf.str(),
-                                    cv::Point2f(static_cast<float>(object.xmin), static_cast<float>(object.ymin - 5)), cv::FONT_HERSHEY_COMPLEX_SMALL, 1,
-                                    cv::Scalar(0, 0, 255));
-                        cv::rectangle(frame, cv::Point2f(static_cast<float>(object.xmin), static_cast<float>(object.ymin)),
-                                      cv::Point2f(static_cast<float>(object.xmax), static_cast<float>(object.ymax)), cv::Scalar(0, 0, 255));
-                    }
-                }
-                cv::imshow("Detection results", frame);
-            }
-
-            const int key = cv::waitKey(1);
-            if (27 == key)  // Esc
-                break;
-            if (9 == key) {  // Tab
-                isAsyncMode ^= true;
-            }
-
-            tm.stop();
-            std::cout << "Total Inference time: " << (numFramesProcessed - 100) / tm.getTimeSec() << std::endl;
-            tm.start();
+            // if (predictionsQueue.counter > 500)
+            //     break;
         }
+
+        // std::ofstream outfile("perf.txt", std::ios_base::app);
+        // outfile << (int)FLAGS_async << " " << predictionsQueue.getFPS() << std::endl;
+
         // -----------------------------------------------------------------------------------------------------
     }
     catch (const std::exception& error) {

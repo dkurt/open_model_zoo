@@ -88,6 +88,10 @@ DEFINE_double(iou_t, 0.4, iou_thresh_output_message);
 /// It is an optional parameter
 DEFINE_bool(auto_resize, false, input_resizable_message);
 
+/// \brief Number of asynchronous requests at the same time<br>
+/// It is an optional parameter
+DEFINE_double(async, 1, "");
+
 
 /**
 * \brief This function shows a help message
