@@ -10,6 +10,7 @@
 
 #include <vector>
 #include <chrono>
+#include <thread>
 
 #include <inference_engine.hpp>
 
@@ -55,11 +56,60 @@ int main(int argc, char* argv[]) {
             return EXIT_SUCCESS;
         }
 
+        cv::namedWindow("ICV Human Pose Estimation", cv::WINDOW_NORMAL);
+
+        std::queue<cv::Mat> framesQueue;
+        std::queue<std::vector<HumanPose> > posesQueue;
+        std::mutex framesQueueMutex;
+
+        double inferenceTime = 0.0;
+
+        std::thread drawingThread([&](){
+            while (true) {
+                cv::Mat image;
+                std::vector<HumanPose> poses;
+                std::stringstream fpsSs;
+
+                framesQueueMutex.lock();
+                if (!framesQueue.empty())
+                {
+                    image = framesQueue.front();
+                    poses = posesQueue.front();
+                    framesQueue.pop();
+                    posesQueue.pop();
+                }
+                else
+                {
+                    framesQueueMutex.unlock();
+                    continue;
+                }
+                framesQueueMutex.unlock();
+
+                renderHumanPose(poses, image);
+
+                cv::Mat fpsPane(35, 155, CV_8UC3);
+                fpsPane.setTo(cv::Scalar(153, 119, 76));
+                // cv::Mat srcRegion = image(cv::Rect(8, 8, fpsPane.cols, fpsPane.rows));
+                // cv::addWeighted(srcRegion, 0.4, fpsPane, 0.6, 0, srcRegion);
+                fpsSs << "FPS: " << int(1000.0f / inferenceTime * 100) / 100.0f;
+                // cv::putText(image, fpsSs.str(), cv::Point(16, 32),
+                //             cv::FONT_HERSHEY_COMPLEX, 0.8, cv::Scalar(0, 0, 255));
+                cv::imshow("ICV Human Pose Estimation", image);
+
+                if (cv::waitKey(1) == 27) {
+                    break;
+                }
+            }
+        });
+
         HumanPoseEstimator estimator(FLAGS_m, FLAGS_d, FLAGS_pc);
         cv::VideoCapture cap;
+        cv::resizeWindow("ICV Human Pose Estimation", 1280, 960);
         if (!(FLAGS_i == "cam" ? cap.open(0) : cap.open(FLAGS_i))) {
             throw std::logic_error("Cannot open input file or camera: " + FLAGS_i);
         }
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
 
         int delay = 33;
 
@@ -83,7 +133,7 @@ int main(int argc, char* argv[]) {
         Presenter presenter(FLAGS_u, static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT)) - graphSize.height - 10, graphSize);
         std::vector<HumanPose> poses;
         bool isLastFrame = false;
-        bool isAsyncMode = false; // execution is always started in SYNC mode
+        bool isAsyncMode = true; // execution is always started in SYNC mode
         bool isModeChanged = false; // set to true when execution mode is changed (SYNC<->ASYNC)
         bool blackBackground = FLAGS_black;
 
@@ -150,21 +200,21 @@ int main(int argc, char* argv[]) {
                     out << "OpenCV cap/render time: " << std::fixed << std::setprecision(2)
                         << (decode_time + render_time) << " ms";
 
-                    cv::putText(curr_frame, out.str(), cv::Point2f(0, 25),
-                                cv::FONT_HERSHEY_TRIPLEX, 0.6, cv::Scalar(0, 255, 0));
+                    // cv::putText(curr_frame, out.str(), cv::Point2f(0, 25),
+                    //             cv::FONT_HERSHEY_TRIPLEX, 0.6, cv::Scalar(0, 255, 0));
                     out.str("");
                     out << "Wallclock time " << (isAsyncMode ? "(TRUE ASYNC):      " : "(SYNC, press Tab): ");
                     out << std::fixed << std::setprecision(2) << wall.count()
                         << " ms (" << 1000.f / wall.count() << " fps)";
-                    cv::putText(curr_frame, out.str(), cv::Point2f(0, 50),
-                                cv::FONT_HERSHEY_TRIPLEX, 0.6, cv::Scalar(0, 0, 255));
+                    // cv::putText(curr_frame, out.str(), cv::Point2f(0, 50),
+                    //             cv::FONT_HERSHEY_TRIPLEX, 0.6, cv::Scalar(0, 0, 255));
                     if (!isAsyncMode) {  // In the true async mode, there is no way to measure detection time directly
                         out.str("");
                         out << "Detection time  : " << std::fixed << std::setprecision(2) << detection.count()
                         << " ms ("
                         << 1000.f / detection.count() << " fps)";
-                        cv::putText(curr_frame, out.str(), cv::Point2f(0, 75), cv::FONT_HERSHEY_TRIPLEX, 0.6,
-                            cv::Scalar(255, 0, 0));
+                        // cv::putText(curr_frame, out.str(), cv::Point2f(0, 75), cv::FONT_HERSHEY_TRIPLEX, 0.6,
+                        //     cv::Scalar(255, 0, 0));
                     }
                 }
 
@@ -188,11 +238,10 @@ int main(int argc, char* argv[]) {
                 }
 
                 if (!FLAGS_no_show) {
-                    presenter.drawGraphs(curr_frame);
-                    renderHumanPose(poses, curr_frame);
-                    cv::imshow("Human Pose Estimation on " + FLAGS_d, curr_frame);
-                    t1 = std::chrono::high_resolution_clock::now();
-                    render_time = std::chrono::duration_cast<ms>(t1 - t0).count();
+                    framesQueueMutex.lock();
+                    framesQueue.push(curr_frame.clone());
+                    posesQueue.push(poses);
+                    framesQueueMutex.unlock();
                 }
             }
 

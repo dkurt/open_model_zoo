@@ -50,7 +50,7 @@ HumanPoseEstimator::HumanPoseEstimator(const std::string& modelPath,
             modelPath + ": expected \"" + imageInputInfo.first + "\" to have dimensions 1x3xHxW");
     }
 
-    inputLayerSize = cv::Size(imageInputDims[3], imageInputDims[2]);
+    inputLayerSize = cv::Size(imageInputDims[3], 128);
     imageInputInfo.second->setPrecision(InferenceEngine::Precision::U8);
 
     InferenceEngine::OutputsDataMap outputInfo = network.getOutputsInfo();
