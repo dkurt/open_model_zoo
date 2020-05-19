@@ -117,6 +117,7 @@ public:
     int num = 0, classes = 0, coords = 0;
     std::vector<float> anchors = {10.0, 13.0, 16.0, 30.0, 33.0, 23.0, 30.0, 61.0, 62.0, 45.0, 59.0, 119.0, 116.0, 90.0,
                                   156.0, 198.0, 373.0, 326.0};
+    bool isYoloV3 = false;
 
     YoloParams() {}
 
@@ -125,9 +126,14 @@ public:
         classes = regionYolo->get_num_classes();
         anchors = regionYolo->get_anchors();
         auto mask = regionYolo->get_mask();
-        num = mask.size();
-
-        computeAnchors(mask);
+        if (mask.empty()) {
+            isYoloV3 = false;
+            num = regionYolo->get_num_regions();
+        } else {
+            isYoloV3 = true;
+            num = mask.size();
+            computeAnchors(mask);
+        }
     }
 
     YoloParams(CNNLayer::Ptr layer) {
@@ -141,9 +147,13 @@ public:
         try { anchors = layer->GetParamAsFloats("anchors"); } catch (...) {}
         try {
             auto mask = layer->GetParamAsInts("mask");
-            num = mask.size();
-
-            computeAnchors(mask);
+            if (mask.empty()) {
+                isYoloV3 = false;
+            } else {
+                isYoloV3 = true;
+                num = mask.size();
+                computeAnchors(mask);
+            }
         } catch (...) {}
     }
 };
@@ -159,7 +169,7 @@ void ParseYOLOV3Output(const CNNNetwork &cnnNetwork, const std::string & output_
     if (out_blob_h != out_blob_w)
         throw std::runtime_error("Invalid size of output " + output_name +
         " It should be in NCHW layout and H should be equal to W. Current H = " + std::to_string(out_blob_h) +
-        ", current W = " + std::to_string(out_blob_h));
+        ", current W = " + std::to_string(out_blob_w));
 
     // --------------------------- Extracting layer parameters -------------------------------------
     YoloParams params;
@@ -193,18 +203,23 @@ void ParseYOLOV3Output(const CNNNetwork &cnnNetwork, const std::string & output_
             float scale = output_blob[obj_index];
             if (scale < threshold)
                 continue;
-            double x = (col + output_blob[box_index + 0 * side_square]) / side * resized_im_w;
-            double y = (row + output_blob[box_index + 1 * side_square]) / side * resized_im_h;
+            double x = (col + output_blob[box_index + 0 * side_square]) / side;
+            double y = (row + output_blob[box_index + 1 * side_square]) / side;
             double height = std::exp(output_blob[box_index + 3 * side_square]) * params.anchors[2 * n + 1];
             double width = std::exp(output_blob[box_index + 2 * side_square]) * params.anchors[2 * n];
+            if (params.isYoloV3) {
+                height /= resized_im_h;
+                width /= resized_im_w;
+            } else {
+                height /= side;
+                width /= side;
+            }
             for (int j = 0; j < params.classes; ++j) {
                 int class_index = EntryIndex(side, params.coords, params.classes, n * side_square + i, params.coords + 1 + j);
                 float prob = scale * output_blob[class_index];
                 if (prob < threshold)
                     continue;
-                DetectionObject obj(x, y, height, width, j, prob,
-                        static_cast<float>(original_im_h) / static_cast<float>(resized_im_h),
-                        static_cast<float>(original_im_w) / static_cast<float>(resized_im_w));
+                DetectionObject obj(x, y, height, width, j, prob, original_im_h, original_im_w);
                 objects.push_back(obj);
             }
         }
@@ -235,10 +250,10 @@ int main(int argc, char *argv[]) {
         const size_t width  = (size_t) cap.get(cv::CAP_PROP_FRAME_WIDTH);
         const size_t height = (size_t) cap.get(cv::CAP_PROP_FRAME_HEIGHT);
 
-        if (!cap.grab()) {
-            throw std::logic_error("This demo supports only video (or camera) inputs !!! "
-                                   "Failed to get next frame from the " + FLAGS_i);
-        }
+        // if (!cap.grab()) {
+        //     throw std::logic_error("This demo supports only video (or camera) inputs !!! "
+        //                            "Failed to get next frame from the " + FLAGS_i);
+        // }
         // -----------------------------------------------------------------------------------------------------
 
         // --------------------------- 1. Load inference engine -------------------------------------
@@ -306,7 +321,7 @@ int main(int argc, char *argv[]) {
         OutputsDataMap outputInfo(cnnNetwork.getOutputsInfo());
         for (auto &output : outputInfo) {
             output.second->setPrecision(Precision::FP32);
-            output.second->setLayout(Layout::NCHW);
+            // output.second->setLayout(Layout::NCHW);
         }
         // -----------------------------------------------------------------------------------------------------
 
@@ -414,6 +429,7 @@ int main(int argc, char *argv[]) {
                 for (auto &output : outputInfo) {
                     auto output_name = output.first;
                     Blob::Ptr blob = async_infer_request_curr->GetBlob(output_name);
+                    blob->getTensorDesc().reshape({1, 425, 13, 13}, Layout::NCHW);
                     ParseYOLOV3Output(cnnNetwork, output_name, blob, resized_im_h, resized_im_w, height, width, FLAGS_t, objects);
                 }
                 // Filtering overlapping boxes
@@ -452,6 +468,7 @@ int main(int argc, char *argv[]) {
             }
             if (!FLAGS_no_show) {
                 cv::imshow("Detection results", frame);
+                cv::waitKey();
             }
 
             t1 = std::chrono::high_resolution_clock::now();
