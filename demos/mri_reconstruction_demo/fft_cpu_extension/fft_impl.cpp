@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "cpu_kernel.hpp"
-#include "op.hpp"
+#include "fft_op.hpp"
 #include <details/ie_exception.hpp>
 #include <ie_layouts.h>
 #include "ie_parallel.hpp"
