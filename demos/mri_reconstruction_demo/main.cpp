@@ -37,10 +37,11 @@ int main(int argc, char** argv) {
         device = "HETERO:" + device + ",CPU";
 
     Core ie;
+    ie.AddExtension(make_so_pointer<IExtension>(FLAGS_l), "CPU");
+
     CNNNetwork net = ie.ReadNetwork(FLAGS_m);
     net.getInputsInfo().begin()->second->setLayout(Layout::NHWC);
 
-    ie.AddExtension(make_so_pointer<IExtension>(FLAGS_l), "CPU");
     ExecutableNetwork execNet = ie.LoadNetwork(net, device);
     InferRequest infReq = execNet.CreateInferRequest();
 

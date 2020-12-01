@@ -24,17 +24,12 @@ macro(ie_add_cpu_extension)
 
     set(TARGET_NAME ${IE_EXTENSION_NAME})
 
-    # find_package(ngraph REQUIRED)
-    # find_package(InferenceEngine REQUIRED)
+    file(GLOB_RECURSE SRC ${CPU_EXTENSIONS_BASE_DIR}/*.cpp)
+    file(GLOB_RECURSE HDR ${CPU_EXTENSIONS_BASE_DIR}/*.hpp)
 
-    file(GLOB_RECURSE SRC *.cpp)
-
-    add_library(${TARGET_NAME} SHARED ${SRC} ${IE_EXTENSION_SOURCES})
+    add_library(${TARGET_NAME} SHARED ${SRC} ${HDR})
 
     target_compile_definitions(${TARGET_NAME} PRIVATE IMPLEMENT_INFERENCE_EXTENSION_API)
-    message("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    message(${InferenceEngine_LIBRARIES})
-    message(${NGRAPH_LIBRARIES})
     target_link_libraries(${TARGET_NAME} PRIVATE ${InferenceEngine_LIBRARIES}
                                                  ${NGRAPH_LIBRARIES}
                                                  ${IE_EXTENSION_DEPENDENCIES})

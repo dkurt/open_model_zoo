@@ -60,13 +60,21 @@ InferenceEngine::StatusCode FFTImpl::getSupportedConfigurations(std::vector<Infe
 
 //! [cpu_implementation:init]
 InferenceEngine::StatusCode FFTImpl::init(InferenceEngine::LayerConfig &config, InferenceEngine::ResponseDesc *resp) noexcept {
-    if (config.inConfs.size() != 1 || config.outConfs.size() != 1) {
-        THROW_IE_EXCEPTION << "Operation cannot be initialized with incorrect number of inputs/outputs!";
-    }
+    try {
+        if (config.inConfs.size() != 1 || config.outConfs.size() != 1) {
+            THROW_IE_EXCEPTION << "Operation cannot be initialized with incorrect number of inputs/outputs!";
+        }
 
-    if (config.outConfs[0].desc.getPrecision() != InferenceEngine::Precision::FP32 ||
-        config.inConfs[0].desc.getPrecision() != InferenceEngine::Precision::FP32)  {
-        THROW_IE_EXCEPTION << "Operation supports only FP32 precisions!";
+        if (config.outConfs[0].desc.getPrecision() != InferenceEngine::Precision::FP32 ||
+            config.inConfs[0].desc.getPrecision() != InferenceEngine::Precision::FP32)  {
+            THROW_IE_EXCEPTION << "Operation supports only FP32 precisions!";
+        }
+    } catch (InferenceEngine::details::InferenceEngineException& ex) {
+        if (resp) {
+            strncpy(resp->msg, error.c_str(), sizeof(resp->msg) - 1);
+            resp->msg[sizeof(resp->msg)-1] = 0;
+        }
+        return InferenceEngine::GENERAL_ERROR;
     }
     return InferenceEngine::OK;
 }
@@ -89,45 +97,28 @@ InferenceEngine::StatusCode FFTImpl::execute(std::vector<InferenceEngine::Blob::
     cv::Mat inp = infEngineBlobToMat(inputs[0]);
     cv::Mat out = infEngineBlobToMat(outputs[0]);
 
-    CV_CheckEQ(inp.size[inp.dims - 1], 2, "");
+    const int n = inp.size[0];
+    const int h = inp.size[2];
+    const int w = inp.size[3];
+    cv::Mat complex(h, w, CV_32FC2), interleavedOut(h, w, CV_32FC2);
+    InferenceEngine::parallel_for(n, [&](size_t i) {
+        std::vector<cv::Mat> components = {
+            cv::Mat(h, w, CV_32F, inp.ptr<float>(i, 0)),
+            cv::Mat(h, w, CV_32F, inp.ptr<float>(i, 1))
+        };
+        cv::merge(components, complex);
 
-    if (inp.dims == 5) {
-        const int batch = inp.size[0];
-        const int channels = inp.size[1];
-        int rows = inp.size[2];
-        int cols = inp.size[3];
-        inp = inp.reshape(1, batch * channels);
-        out = out.reshape(1, batch * channels);
-        InferenceEngine::parallel_for(batch * channels, [&](size_t d) {
-            cv::Mat inpSlice(rows, cols, CV_32FC2, inp.ptr<float>(d));
-            cv::Mat outSlice(rows, cols, CV_32FC2, out.ptr<float>(d));
-            if (inverse)
-                cv::idft(inpSlice, outSlice);
-            else
-                cv::dft(inpSlice, outSlice);
-        });
-        out /= sqrtf(cols * rows);
-    } else {
-        int rows, cols;
-        if (inp.dims == 4) {
-            rows = inp.size[0] * inp.size[1];
-            cols = inp.size[2];
-        } else if (inp.dims == 3) {
-            rows = inp.size[0];
-            cols = inp.size[1];
-        } else {
-            CV_Assert(inp.dims == 3 || inp.dims == 4);
-        }
-        inp = cv::Mat(rows, cols, CV_32FC2, inp.ptr<float>());
-        out = cv::Mat(rows, cols, CV_32FC2, out.ptr<float>());
-
-        if (inverse)
-            cv::idft(inp, out, cv::DFT_ROWS);
+        if (!inverse)
+            cv::dft(complex, interleavedOut);
         else
-            cv::dft(inp, out, cv::DFT_ROWS);
-        out /= sqrtf(cols);
-    }
+            cv::idft(complex, interleavedOut, cv::DFT_SCALE);
 
+        components = {
+            cv::Mat(h, w, CV_32F, out.ptr<float>(i, 0)),
+            cv::Mat(h, w, CV_32F, out.ptr<float>(i, 1))
+        };
+        cv::split(interleavedOut, components);
+    });
     return InferenceEngine::OK;
 }
 //! [cpu_implementation:execute]

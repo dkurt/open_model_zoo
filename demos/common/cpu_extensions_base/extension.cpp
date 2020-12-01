@@ -32,7 +32,7 @@ void Extension::GetVersion(const InferenceEngine::Version *&versionInfo) const n
 std::map<std::string, ngraph::OpSet> Extension::getOpSets() {
     std::map<std::string, ngraph::OpSet> opsets;
     ngraph::OpSet opset;
-    opset.insert<UnpoolOp>();
+    // opset.insert<UnpoolOp>();
     opset.insert<FFTOp>();
     opsets["extension"] = opset;
     return opsets;
@@ -41,8 +41,7 @@ std::map<std::string, ngraph::OpSet> Extension::getOpSets() {
 
 //! [extension:getImplTypes]
 std::vector<std::string> Extension::getImplTypes(const std::shared_ptr<ngraph::Node> &node) {
-    if (std::dynamic_pointer_cast<UnpoolOp>(node) ||
-        std::dynamic_pointer_cast<FFTOp>(node)) {
+    if (std::dynamic_pointer_cast<FFTOp>(node)) {
         return {"CPU"};
     }
     return {};
@@ -51,9 +50,9 @@ std::vector<std::string> Extension::getImplTypes(const std::shared_ptr<ngraph::N
 
 //! [extension:getImplementation]
 InferenceEngine::ILayerImpl::Ptr Extension::getImplementation(const std::shared_ptr<ngraph::Node> &node, const std::string &implType) {
-    if (std::dynamic_pointer_cast<UnpoolOp>(node) && implType == "CPU") {
-        return std::make_shared<UnpoolImpl>(node);
-    }
+    // if (std::dynamic_pointer_cast<UnpoolOp>(node) && implType == "CPU") {
+    //     return std::make_shared<UnpoolImpl>(node);
+    // }
     if (std::dynamic_pointer_cast<FFTOp>(node) && implType == "CPU") {
         return std::make_shared<FFTImpl>(node);
     }
