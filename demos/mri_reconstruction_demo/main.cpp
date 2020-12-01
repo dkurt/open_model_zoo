@@ -1,8 +1,6 @@
 #include <inference_engine.hpp>
 #include <opencv2/opencv.hpp>
 
-#include <samples/slog.hpp>
-
 #include "mri_reconstruction_demo.hpp"
 #include "npy_reader.hpp"
 
@@ -153,8 +151,6 @@ bool ParseAndCheckCommandLine(int argc, char *argv[]) {
         showUsage();
         return false;
     }
-
-    slog::info << "Parsing input parameters" << slog::endl;
 
     if (FLAGS_i.empty()) {
         throw std::logic_error("Parameter -i is not set");

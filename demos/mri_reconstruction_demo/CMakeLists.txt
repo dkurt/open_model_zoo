@@ -1,5 +1,7 @@
+find_package(OpenCV REQUIRED COMPONENTS core)
+
 ie_add_cpu_extension(NAME fft_cpu_extension
-                     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ext_fft2d.cpp"
+                    #  SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ext_fft2d.cpp"
                      DEPENDENCIES opencv_core)
 
 ie_add_sample(NAME mri_reconstruction_demo
